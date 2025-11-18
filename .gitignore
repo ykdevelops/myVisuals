@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Large media files
+*.mp4
+*.wav
+*.mp3
+*.avi
+*.mov
+*.mkv
+
+# Checkpoints and temporary render files
+checkpoints/
+*.log
+
+# Output files
+output_*.mp4
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+test_*.log
+
