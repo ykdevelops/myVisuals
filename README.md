@@ -1,20 +1,23 @@
 # AudioGiphy
 
-AudioGiphy is an experimental tool that turns a music track into a vertical video made from 1 second GIF clips, roughly synced to the track BPM.
+AudioGiphy is a Python tool that creates vertical videos from audio tracks by syncing 1-second visual clips to the track's BPM (beats per minute). It includes advanced lyric detection and overlay features, supporting both phrase-ending word highlights and full karaoke mode. This MVP demonstrates a fully local, memory-efficient video rendering pipeline that analyzes audio, detects lyrics, selects clips from a local bank, and produces a final MP4 synchronized to the music.
 
 ## Overview
 
-This MVP demonstrates a BPM-driven video visualizer that:
-- Analyzes audio files to detect BPM changes over time
-- Randomly selects clips from a local folder of MP4s/GIFs
-- Builds 1-second visual segments synced to BPM
-- Concatenates segments with ffmpeg and attaches the original audio
+AudioGiphy takes a local audio file and a folder of MP4 clips, then:
 
-The tool is designed to be memory-efficient, handling long videos (48+ minutes) without running out of memory by writing clips to disk and using ffmpeg for concatenation.
+- **Analyzes BPM** over time using librosa
+- **Detects lyrics** using OpenAI Whisper (optional) with word-level timestamps
+- **Selects clips** randomly from a local bank folder
+- **Builds 1-second segments** synced to the BPM timeline
+- **Overlays lyrics** (optional) in phrase-ending mode or full karaoke mode
+- **Renders a vertical MP4** (1080x1920 by default) with the original audio attached
+
+The tool is designed to be memory-efficient, handling long videos (48+ minutes) without running out of memory by writing clips to disk immediately and using ffmpeg for efficient concatenation.
 
 ## Requirements
 
-- **Python**: 3.10 or higher
+- **Python**: 3.11 or higher
 - **ffmpeg**: Must be installed and available in PATH
 - **Python packages**: See `requirements.txt`
 
@@ -54,80 +57,287 @@ pip install -r requirements.txt
 
 ## Quick Start
 
+### Basic Render (BPM-synced visuals only)
+
 ```bash
-python -m audiogiphy.cli \
-  --audio path/to/audio.wav \
-  --gif-folder path/to/video_bank \
+python -m audiogiphy.cli render \
+  --audio "song.mp3" \
+  --gif-folder bank \
   --duration-seconds 60 \
   --output output.mp4
 ```
 
-### Example
+### Render with Phrase-Ending Lyrics
 
 ```bash
-python -m audiogiphy.cli \
-  --audio mixes/test_mix.mp3 \
+# First, detect lyrics
+python -m audiogiphy.cli detect-lyrics \
+  --audio "song.mp3" \
+  --lyrics-output lyrics.json
+
+# Then render with lyrics overlay
+python -m audiogiphy.cli render \
+  --audio "song.mp3" \
   --gif-folder bank \
   --duration-seconds 60 \
-  --output renders/test_output.mp4 \
-  --width 720 \
-  --height 1280 \
-  --seed 42
+  --output output_with_lyrics.mp4 \
+  --lyrics-json lyrics.json
 ```
 
-## CLI Arguments
+### Render with Karaoke Mode (All Words)
 
-- `--audio` (required): Path to input audio file (WAV, MP3, etc.)
-- `--gif-folder` (required): Path to folder containing MP4 video files
-- `--duration-seconds` (optional): Duration of output video in seconds (default: 60)
-- `--output` (optional): Path for output video file (default: output.mp4)
-- `--width` (optional): Video width in pixels (default: 1080)
-- `--height` (optional): Video height in pixels (default: 1920)
-- `--seed` (optional): Random seed for reproducible results
+```bash
+# Detect lyrics (same as above)
+python -m audiogiphy.cli detect-lyrics \
+  --audio "song.mp3" \
+  --lyrics-output lyrics.json
 
-## How It Works
+# Render with karaoke mode
+python -m audiogiphy.cli render \
+  --audio "song.mp3" \
+  --gif-folder bank \
+  --duration-seconds 60 \
+  --output karaoke_output.mp4 \
+  --lyrics-json lyrics.json \
+  --karaoke-mode
+```
 
-1. **BPM Analysis**: Analyzes the audio file to detect BPM segments and creates a per-second BPM timeline
-2. **Clip Generation**: For each second:
-   - Randomly selects a source MP4 from the video bank
-   - Extracts a random subclip
-   - Adjusts speed based on local BPM relative to base BPM
-   - Resizes with letterboxing to target resolution
-   - Writes to disk as a 1-second clip
-3. **Concatenation**: Uses ffmpeg concat demuxer to combine all clips (fast, no re-encoding)
-4. **Audio Attachment**: Attaches the trimmed audio track to the final video
+### Example Folder Layout
+
+```
+myVisuals/
+├── bank/              # MP4 clips (source videos)
+├── mixes/             # Audio files (.wav, .mp3)
+├── renders/           # Output videos
+├── audiogiphy/        # Package source code
+└── *.json             # Lyrics JSON files (from detect-lyrics)
+```
+
+## CLI Commands
+
+### Render Command
+
+Creates a BPM-synced video with optional lyric overlays.
+
+**Required arguments:**
+- `--audio`: Path to input audio file (WAV, MP3, etc.)
+- `--gif-folder`: Path to folder containing MP4 video files
+
+**Optional arguments:**
+- `--duration-seconds`: Duration of output video in seconds (default: 60)
+- `--output`: Path for output video file (default: output.mp4)
+- `--width`: Video width in pixels (default: 1080)
+- `--height`: Video height in pixels (default: 1920)
+- `--seed`: Random seed for reproducible results
+- `--lyrics-json`: Path to lyrics JSON file from `detect-lyrics`. If provided, overlays phrase-ending words on video.
+- `--karaoke-mode`: Display all words per second (karaoke mode). Requires `--lyrics-json`.
+
+**Examples:**
+```bash
+# Basic render
+python -m audiogiphy.cli render --audio song.mp3 --gif-folder bank --duration-seconds 30 --output out.mp4
+
+# With phrase-ending lyrics
+python -m audiogiphy.cli render --audio song.mp3 --gif-folder bank --output out.mp4 --lyrics-json lyrics.json
+
+# With karaoke mode (all words)
+python -m audiogiphy.cli render --audio song.mp3 --gif-folder bank --output karaoke.mp4 --lyrics-json lyrics.json --karaoke-mode
+```
+
+### Detect Lyrics Command
+
+Detects lyrics from an audio file using OpenAI Whisper and outputs word-level timestamps.
+
+**Required arguments:**
+- `--audio`: Path to input audio file (WAV, MP3, etc.)
+
+**Optional arguments:**
+- `--lyrics-output`: Path to output file (JSON or .txt). If not provided, prints to terminal only
+- `--language`: Language code (e.g., 'en', 'es', 'fr'). Default: auto-detect
+- `--model-size`: Whisper model size - tiny, base, small, medium, large (default: medium)
+- `--initial-prompt`: Optional prompt to guide transcription (e.g., 'Glamorous by Fergie feat Ludacris')
+
+**Examples:**
+```bash
+# Detect and print to terminal
+python -m audiogiphy.cli detect-lyrics --audio song.mp3
+
+# Detect and save to JSON
+python -m audiogiphy.cli detect-lyrics --audio song.mp3 --lyrics-output lyrics.json
+
+# Detect with custom language and model
+python -m audiogiphy.cli detect-lyrics --audio song.mp3 --language es --model-size small --lyrics-output lyrics.json
+```
+
+**Note:** If the audio file is shorter than the requested duration, the output will be clamped to the audio length.
+
+## Features
+
+### 1. BPM Analysis with librosa
+
+The audio file is analyzed using librosa to detect BPM changes over time. The analysis:
+- Slides a window over the audio track
+- Estimates BPM for each window
+- Groups similar BPM regions into segments
+- Creates a per-second BPM timeline
+- Adjusts clip playback speed based on local BPM relative to base BPM
+
+### 2. Lyric Detection with Whisper
+
+Optional lyric detection using OpenAI Whisper:
+- **Model**: Medium by default (configurable: tiny, base, small, medium, large)
+- **Word-level timestamps**: Precise start/end times for each word
+- **Language detection**: Auto-detects language or specify manually
+- **Music-optimized**: Tuned parameters for better music transcription
+- **Output formats**: JSON (with timestamps) or plain text
+
+### 3. Lyric Overlay Modes
+
+Two lyric overlay modes are available:
+
+#### Phrase-Ending Mode (Default)
+- Detects lyric phrases using punctuation and time gaps
+- Extracts the last meaningful word from each phrase
+- Displays large, bold, white text (120px) centered on screen
+- Words appear at phrase endings for one second
+
+#### Karaoke Mode (`--karaoke-mode`)
+- Displays all words spoken in each second
+- Words are joined into lines and auto-wrapped
+- Smaller font size (80px) for readability
+- Text positioned in upper quarter of screen
+- Perfect for synchronized karaoke-style display
+
+### 4. 1 Second Visual Clips from Local Bank
+
+For each second of the output video:
+- A random MP4 is selected from the video bank folder
+- A random subclip is extracted
+- Playback speed is adjusted based on local BPM relative to the base BPM
+- The clip is resized with letterboxing to the target resolution (1080x1920)
+- Optional lyric overlay is applied (if lyrics JSON provided)
+- A 1-second MP4 clip is written to disk
+
+### 5. Final MP4 with Original Audio
+
+- All 1-second clips are concatenated using ffmpeg (stream copy, no re-encoding)
+- The original audio track is trimmed to match the video duration
+- Audio is attached to the video
+- The final MP4 is written to the output path
 
 ## Project Structure
 
 ```
 audiogiphy/
-├── __init__.py           # Package initialization
+├── __init__.py           # Package initialization and exports
 ├── audio_analysis.py     # BPM analysis functions
 ├── visual_builder.py     # Video clip processing and building
-├── giphy_placeholder.py  # Placeholder for future GIPHY API integration
+├── lyrics_analysis.py    # Whisper-based lyric detection
+├── lyrics_overlays.py    # Lyric parsing and overlay mapping
 ├── render_pipeline.py    # Main rendering orchestration
-└── cli.py                # Command-line interface
+├── config.py             # Centralized configuration constants
+├── cli.py                # Command-line interface
+├── giphy_placeholder.py  # Placeholder for future GIPHY API integration
+├── api.py                # Flask API endpoints
+└── api_server.py         # API server entry point
 ```
 
 ## Memory Efficiency
 
-The script is designed to handle long videos without running out of memory:
+The pipeline is designed to handle long videos without running out of memory:
 - Clips are written to disk immediately, not kept in memory
 - Only one VideoFileClip is loaded at a time (the final concatenated video)
-- ffmpeg handles concatenation efficiently using stream copy
+- ffmpeg handles concatenation efficiently using stream copy (no re-encoding)
+- Checkpoints allow resuming interrupted renders
 
 ## Checkpoints
 
 The script automatically saves checkpoints every 50 seconds. If interrupted, it will resume from the last checkpoint when run again with the same output path.
 
-Checkpoints are stored in: `checkpoints/<output_filename>/`
+Checkpoints are stored in: `<output_directory>/checkpoints/<output_filename>/`
+
+## Error Handling
+
+The tool handles common failures gracefully:
+- **Missing ffmpeg**: Clear error message with installation instructions
+- **No usable clips**: Validates MP4 files exist in the bank folder
+- **Audio shorter than duration**: Automatically clamps duration to audio length
+- **Corrupted clips**: Automatically blacklists problematic files and uses fallback frames
+- **Lyric detection failures**: Logs warnings and continues without lyrics
+- **Text overlay failures**: Preserves video clip even if text rendering fails
+
+## Configuration
+
+Key configuration constants are centralized in `audiogiphy/config.py`:
+- Video defaults (resolution, FPS, clip duration)
+- BPM analysis parameters
+- Whisper model settings
+- Lyric overlay styling (font size, colors, positioning)
+
+## Testing
+
+Run tests with pytest:
+```bash
+pytest tests/
+```
+
+Test coverage includes:
+- BPM analysis
+- Visual builder
+- Lyric detection
+- Lyric overlays (phrase-ending and karaoke mapping)
+- Render pipeline
+
+## Web Frontend (Vue.js)
+
+AudioGiphy includes a minimal Vue.js web interface for testing renders without using the CLI.
+
+### Setup Frontend
+
+1. Install Node.js and npm (if not already installed)
+
+2. Install frontend dependencies:
+```bash
+cd frontend
+npm install
+```
+
+3. Start the backend API server (in one terminal):
+```bash
+python -m audiogiphy.api_server
+```
+
+4. Start the Vue.js dev server (in another terminal):
+```bash
+cd frontend
+npm run dev
+```
+
+5. Open your browser to `http://localhost:5173`
+
+### Using the Web Interface
+
+- Fill in the form with your render parameters
+- Click "Start Render" to begin
+- Watch logs stream in real-time
+- Errors are displayed at the top if validation fails
+
+### Building for Production
+
+To build the frontend for production:
+```bash
+cd frontend
+npm run build
+```
+
+The built files will be in `frontend/dist/` and will be served automatically by the API server.
 
 ## Future Work
 
-- **GIPHY API Integration**: Replace local video folder with real-time GIPHY search via `GiphyClient`
-- **Lyric Analysis**: Optional lyric analysis using speech-to-text to better sync visuals
-- **Mood and Genre Tagging**: Better clip selection based on audio mood/genre detection
-- **Web Interface**: Simple web UI for easier use
+- **Real GIPHY API Integration**: Replace local video folder with real-time GIPHY search using `GiphyClient` in `giphy_placeholder.py`
+- **Mood and Genre Aware Clip Selection**: Analyze audio mood/genre and select clips that match
+- **Advanced Lyric Styling**: Customizable fonts, colors, animations
+- **Multi-language Support**: Enhanced language detection and transcription
 
 ## License
 

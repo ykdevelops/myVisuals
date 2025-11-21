@@ -10,7 +10,12 @@ Future implementation would:
 3. Return paths to downloaded files for use in visual_builder
 """
 
+import logging
 from typing import List
+
+__all__ = ["GiphyClient"]
+
+logger = logging.getLogger("audiogiphy.giphy_placeholder")
 
 
 class GiphyClient:
@@ -37,9 +42,9 @@ class GiphyClient:
         self.placeholder_mode = api_key is None or api_key == ""
         
         if self.placeholder_mode:
-            print("[giphy] GiphyClient is in placeholder mode, using local video folder instead", flush=True)
+            logger.info("GiphyClient is in placeholder mode, using local video folder instead")
         else:
-            print(f"[giphy] GiphyClient initialized with API key: {api_key[:8]}...", flush=True)
+            logger.info(f"GiphyClient initialized with API key: {api_key[:8]}...")
     
     def search_gifs(self, query: str, limit: int = 50) -> List[str]:
         """
@@ -61,8 +66,8 @@ class GiphyClient:
             (Empty list in placeholder mode)
         """
         if self.placeholder_mode:
-            print(f"[giphy] Placeholder mode: would search for '{query}' (limit={limit})", flush=True)
-            print("[giphy] Using local video folder instead of GIPHY API", flush=True)
+            logger.info(f"Placeholder mode: would search for '{query}' (limit={limit})")
+            logger.info("Using local video folder instead of GIPHY API")
             return []
         
         # Future implementation would go here:
@@ -74,6 +79,6 @@ class GiphyClient:
         # ... download and convert GIFs ...
         # return list_of_mp4_paths
         
-        print(f"[giphy] API mode: searching for '{query}' (limit={limit})", flush=True)
+        logger.info(f"API mode: searching for '{query}' (limit={limit})")
         return []
 

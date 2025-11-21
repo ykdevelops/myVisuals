@@ -31,7 +31,7 @@ Check your GitHub repository - you should see:
 - ✅ README.md
 - ✅ requirements.txt
 - ✅ .gitignore
-- ✅ convert_gifs_to_mp4.py
+- ✅ scripts/preprocess_gifs.py
 
 And **NOT** see:
 - ❌ Any .mp4 files
@@ -43,7 +43,7 @@ And **NOT** see:
 ## What's included vs excluded
 
 **Included (tracked by git):**
-- Source code (main.py, convert_gifs_to_mp4.py)
+- Source code (audiogiphy/, scripts/preprocess_gifs.py)
 - Documentation (README.md)
 - Dependencies (requirements.txt)
 - Git configuration (.gitignore)

@@ -7,11 +7,24 @@ over time, creating a timeline that drives video clip speed synchronization.
 
 from dataclasses import dataclass
 from typing import List
+import logging
 
 import librosa
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
+
+from audiogiphy.config import BPM_WINDOW_SECONDS, BPM_HOP_SECONDS, DEFAULT_BPM_FALLBACK
+
+__all__ = [
+    "BpmSegment",
+    "analyze_bpm_segments",
+    "bpm_timeline_from_segments",
+    "analyze_bpm_per_second",
+    "analyze_global_bpm",
+]
+
+logger = logging.getLogger("audiogiphy.audio_analysis")
 
 
 @dataclass
@@ -32,8 +45,8 @@ class BpmSegment:
 def analyze_bpm_segments(
     audio_path: str,
     sr: int | None = None,
-    window_seconds: float = 8.0,
-    hop_seconds: float = 4.0,
+    window_seconds: float = BPM_WINDOW_SECONDS,
+    hop_seconds: float = BPM_HOP_SECONDS,
     min_bpm: float = 60.0,
     max_bpm: float = 180.0,
     change_threshold: float = 2.5,
@@ -134,7 +147,7 @@ def analyze_bpm_segments(
     # If still all NaN, give up with a default
     finite_bpms = [b for b in window_bpm if np.isfinite(b)]
     if not finite_bpms:
-        return [BpmSegment(start=0.0, end=total_duration, bpm=120.0)]
+        return [BpmSegment(start=0.0, end=total_duration, bpm=DEFAULT_BPM_FALLBACK)]
 
     # Replace remaining NaNs with global median
     global_bpm = float(np.median(finite_bpms))
@@ -178,7 +191,7 @@ def bpm_timeline_from_segments(
         List of BPM values, one per second, indexed by second number
     """
     if not segments:
-        return [120.0] * duration_seconds
+        return [DEFAULT_BPM_FALLBACK] * duration_seconds
 
     bpm_values: List[float] = []
     for t in range(duration_seconds):
@@ -210,9 +223,9 @@ def analyze_bpm_per_second(audio_path: str, duration_seconds: int) -> List[float
         Used in the render pipeline to get BPM values for each second
         of video, which drives the speed adjustment of visual clips.
     """
-    print("[bpm] Analyzing BPM segments...", flush=True)
+    logger.info("Analyzing BPM segments")
     segments = analyze_bpm_segments(audio_path)
-    print(f"[bpm] Found {len(segments)} BPM segments", flush=True)
+    logger.info(f"Found {len(segments)} BPM segments")
     return bpm_timeline_from_segments(segments, duration_seconds)
 
 
@@ -237,7 +250,7 @@ def analyze_global_bpm(audio_path: str, duration_seconds: int) -> float:
     """
     segments = analyze_bpm_segments(audio_path)
     if not segments:
-        return 120.0
+        return DEFAULT_BPM_FALLBACK
     
     # Weighted median by segment length
     bpms = []

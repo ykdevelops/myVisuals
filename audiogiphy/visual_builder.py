@@ -5,15 +5,35 @@ This module handles building the visual track by processing video clips,
 applying BPM-based speed changes, resizing, and writing 1-second segments to disk.
 """
 
-from typing import List, Tuple, Set
+from typing import List, Tuple, Set, Dict
 import json
 import random
+import logging
 
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 from moviepy import VideoFileClip, AudioFileClip, ColorClip, CompositeVideoClip  # type: ignore
 from moviepy import vfx  # type: ignore
+
+from audiogiphy.config import (
+    DEFAULT_FPS,
+    CLIP_DURATION_SECONDS,
+    BASE_WINDOW_SECONDS,
+    CHECKPOINT_INTERVAL,
+    CHECKPOINTS_DIR,
+    LYRICS_FONT_SIZE,
+    LYRICS_KARAOKE_FONT_SIZE,
+    LYRICS_TEXT_COLOR,
+    LYRICS_STROKE_COLOR,
+    LYRICS_STROKE_WIDTH,
+    LYRICS_VERTICAL_POSITION,
+    LYRICS_MAX_HEIGHT_RATIO,
+)
+
+__all__ = ["build_visual_track"]
+
+logger = logging.getLogger("audiogiphy.visual_builder")
 
 
 def _subclip(clip: VideoFileClip, start: float, end: float) -> VideoFileClip:
@@ -76,6 +96,271 @@ def _resize_letterbox(clip: VideoFileClip, target_resolution: Tuple[int, int]) -
     return CompositeVideoClip([bg, fg])
 
 
+def _add_text_overlay(
+    clip: VideoFileClip,
+    text: str,
+    resolution: Tuple[int, int],
+) -> VideoFileClip:
+    """
+    Add a text overlay to a video clip.
+    
+    Args:
+        clip: Video clip to overlay text on
+        text: Text to display (will be uppercased and made bold)
+        resolution: Target resolution (width, height)
+        
+    Returns:
+        CompositeVideoClip with text overlay on top
+    """
+    try:
+        from moviepy import TextClip  # type: ignore
+        
+        # Convert text to uppercase and ensure it's bold
+        text_upper = text.upper().strip()
+        
+        # Calculate safe size to prevent cropping - constrain both width and height
+        # Use 85% of width and 30% of height to ensure text fits without cropping
+        max_width = int(resolution[0] * 0.85)
+        max_height = int(resolution[1] * LYRICS_MAX_HEIGHT_RATIO)  # e.g. 30% of frame height
+        
+        # Ensure text clip duration matches video clip duration
+        clip_duration = getattr(clip, 'duration', None) or CLIP_DURATION_SECONDS
+        
+        # Create text clip - MoviePy uses font_size not fontsize, and text parameter name
+        # Try bold fonts in order of preference
+        bold_fonts = ["Arial-Bold", "Arial-Black", "Helvetica-Bold", "DejaVu-Sans-Bold"]
+        txt_clip = None
+        
+        for font_name in bold_fonts + [None]:  # Try bold fonts, then default
+            try:
+                if font_name:
+                    txt_clip = TextClip(
+                        text=text_upper,
+                        font_size=LYRICS_FONT_SIZE,
+                        color=LYRICS_TEXT_COLOR,
+                        stroke_color=LYRICS_STROKE_COLOR,
+                        stroke_width=LYRICS_STROKE_WIDTH,
+                        font=font_name,
+                        method="caption",
+                        size=(max_width, max_height),  # Constrain both width and height to prevent cropping
+                    ).with_duration(clip_duration)
+                    logger.debug(f"Successfully created text clip with font: {font_name}, size=({max_width}, {max_height})")
+                    break
+                else:
+                    # Fallback: no font specified (use default, still uppercase and bold via stroke)
+                    txt_clip = TextClip(
+                        text=text_upper,
+                        font_size=LYRICS_FONT_SIZE,
+                        color=LYRICS_TEXT_COLOR,
+                        stroke_color=LYRICS_STROKE_COLOR,
+                        stroke_width=LYRICS_STROKE_WIDTH,
+                        method="caption",
+                        size=(max_width, max_height),
+                    ).with_duration(clip_duration)
+                    logger.debug(f"Created text clip with default font, size=({max_width}, {max_height})")
+                    break
+            except Exception as e:
+                if font_name:
+                    logger.debug(f"Font {font_name} failed: {e}, trying next")
+                else:
+                    # Last resort: basic text clip without caption method
+                    try:
+                        txt_clip = TextClip(
+                            text=text_upper,
+                            font_size=LYRICS_FONT_SIZE,
+                            color=LYRICS_TEXT_COLOR,
+                            stroke_color=LYRICS_STROKE_COLOR,
+                            stroke_width=LYRICS_STROKE_WIDTH,
+                        ).with_duration(clip_duration)
+                        logger.debug("Created basic text clip (no caption method)")
+                        break
+                    except Exception as e2:
+                        logger.warning(f"All text clip creation methods failed: {e2}")
+                        raise
+        
+        if txt_clip is None:
+            raise RuntimeError("Failed to create text clip with any method")
+        
+        # Position text consistently using vertical position constant
+        # Center horizontally, position vertically based on LYRICS_VERTICAL_POSITION
+        y_position = resolution[1] * LYRICS_VERTICAL_POSITION  # e.g. 0.25 for upper quarter
+        txt_clip = txt_clip.with_position(("center", y_position))
+        
+        # Get base clip size to ensure composite maintains original resolution
+        base_size = getattr(clip, 'size', None) or resolution
+        
+        # Composite text over video (text clip on top - outmost layer)
+        # IMPORTANT: Explicitly set size to base clip size so composite doesn't shrink to fit text
+        result = CompositeVideoClip([clip, txt_clip], size=base_size)
+        
+        # Verify composite contains both clips and text is on top
+        if hasattr(result, 'clips') and len(result.clips) >= 2:
+            logger.debug(f"Composite verified: {len(result.clips)} clips (base video + text overlay)")
+            # Verify the first clip is the original video clip (base layer)
+            base_clip = result.clips[0]
+            # Verify the last clip is the text overlay (top layer)
+            top_clip = result.clips[-1]
+            if base_clip is clip and top_clip is txt_clip:
+                logger.debug("Composite layers verified: video (base) + text (top/outmost)")
+            else:
+                logger.warning("Composite layer order may be incorrect")
+        else:
+            logger.warning(f"Composite clip structure unexpected: {len(result.clips) if hasattr(result, 'clips') else 'unknown'} clips")
+        
+        # Ensure result has correct duration and size
+        result = result.with_duration(clip_duration)
+        if hasattr(clip, 'size') and clip.size:
+            # Verify size is preserved
+            if hasattr(result, 'size') and result.size != clip.size:
+                logger.warning(f"Composite size mismatch: original={clip.size}, composite={result.size}")
+        
+        # Log text details
+        logger.debug(f"Created text overlay: text='{text_upper}' (uppercase, bold), position=center/{y_position:.0f}px, duration={clip_duration}, composite_size={result.size if hasattr(result, 'size') else 'N/A'}, text_constraints=({max_width}x{max_height})")
+        return result
+    except Exception as e:
+        logger.error(f"Failed to create text overlay: {e}", exc_info=True)
+        logger.warning("Returning original clip without text overlay due to error")
+        # CRITICAL: Always return the original clip if overlay fails
+        # This ensures dancing GIFs are still visible even if text overlay fails
+        return clip
+
+
+def _add_karaoke_overlay(
+    clip: VideoFileClip,
+    text: str,
+    resolution: Tuple[int, int],
+) -> VideoFileClip:
+    """
+    Add a karaoke-style text overlay to a video clip.
+    
+    Similar to _add_text_overlay but uses smaller font size for displaying
+    multiple words per second. Text is automatically wrapped within constraints.
+    
+    Args:
+        clip: Video clip to overlay text on
+        text: Text to display (will be uppercased)
+        resolution: Target resolution (width, height)
+        
+    Returns:
+        CompositeVideoClip with text overlay on top
+    """
+    try:
+        from moviepy import TextClip  # type: ignore
+        
+        # Convert text to uppercase
+        text_upper = text.upper().strip()
+        
+        if not text_upper:
+            logger.debug("Empty text provided for karaoke overlay, returning original clip")
+            return clip
+        
+        # Calculate safe size to prevent cropping - constrain both width and height
+        # Use 85% of width and 30% of height to ensure text fits without cropping
+        max_width = int(resolution[0] * 0.85)
+        max_height = int(resolution[1] * LYRICS_MAX_HEIGHT_RATIO)  # e.g. 30% of frame height
+        
+        # Ensure text clip duration matches video clip duration
+        clip_duration = getattr(clip, 'duration', None) or CLIP_DURATION_SECONDS
+        
+        # Create text clip - MoviePy uses font_size not fontsize, and text parameter name
+        # Try bold fonts in order of preference
+        bold_fonts = ["Arial-Bold", "Arial-Black", "Helvetica-Bold", "DejaVu-Sans-Bold"]
+        txt_clip = None
+        
+        for font_name in bold_fonts + [None]:  # Try bold fonts, then default
+            try:
+                if font_name:
+                    txt_clip = TextClip(
+                        text=text_upper,
+                        font_size=LYRICS_KARAOKE_FONT_SIZE,
+                        color=LYRICS_TEXT_COLOR,
+                        stroke_color=LYRICS_STROKE_COLOR,
+                        stroke_width=LYRICS_STROKE_WIDTH,
+                        font=font_name,
+                        method="caption",
+                        size=(max_width, max_height),  # Constrain both width and height to prevent cropping
+                    ).with_duration(clip_duration)
+                    logger.debug(f"Successfully created karaoke text clip with font: {font_name}, size=({max_width}, {max_height})")
+                    break
+                else:
+                    # Fallback: no font specified (use default)
+                    txt_clip = TextClip(
+                        text=text_upper,
+                        font_size=LYRICS_KARAOKE_FONT_SIZE,
+                        color=LYRICS_TEXT_COLOR,
+                        stroke_color=LYRICS_STROKE_COLOR,
+                        stroke_width=LYRICS_STROKE_WIDTH,
+                        method="caption",
+                        size=(max_width, max_height),
+                    ).with_duration(clip_duration)
+                    logger.debug(f"Created karaoke text clip with default font, size=({max_width}, {max_height})")
+                    break
+            except Exception as e:
+                if font_name:
+                    logger.debug(f"Font {font_name} failed: {e}, trying next")
+                else:
+                    # Last resort: basic text clip without caption method
+                    try:
+                        txt_clip = TextClip(
+                            text=text_upper,
+                            font_size=LYRICS_KARAOKE_FONT_SIZE,
+                            color=LYRICS_TEXT_COLOR,
+                            stroke_color=LYRICS_STROKE_COLOR,
+                            stroke_width=LYRICS_STROKE_WIDTH,
+                        ).with_duration(clip_duration)
+                        logger.debug("Created basic karaoke text clip (no caption method)")
+                        break
+                    except Exception as e2:
+                        logger.warning(f"All karaoke text clip creation methods failed: {e2}")
+                        raise
+        
+        if txt_clip is None:
+            raise RuntimeError("Failed to create karaoke text clip with any method")
+        
+        # Position text consistently using vertical position constant
+        # Center horizontally, position vertically based on LYRICS_VERTICAL_POSITION
+        y_position = resolution[1] * LYRICS_VERTICAL_POSITION  # e.g. 0.25 for upper quarter
+        txt_clip = txt_clip.with_position(("center", y_position))
+        
+        # Get base clip size to ensure composite maintains original resolution
+        base_size = getattr(clip, 'size', None) or resolution
+        
+        # Composite text over video (text clip on top - outmost layer)
+        # IMPORTANT: Explicitly set size to base clip size so composite doesn't shrink to fit text
+        result = CompositeVideoClip([clip, txt_clip], size=base_size)
+        
+        # Verify composite contains both clips and text is on top
+        if hasattr(result, 'clips') and len(result.clips) >= 2:
+            logger.debug(f"Karaoke composite verified: {len(result.clips)} clips (base video + text overlay)")
+            # Verify the first clip is the original video clip (base layer)
+            base_clip = result.clips[0]
+            # Verify the last clip is the text overlay (top layer)
+            top_clip = result.clips[-1]
+            if base_clip is clip and top_clip is txt_clip:
+                logger.debug("Karaoke composite layers verified: video (base) + text (top/outmost)")
+            else:
+                logger.warning("Karaoke composite layer order may be incorrect")
+        else:
+            logger.warning(f"Karaoke composite clip structure unexpected: {len(result.clips) if hasattr(result, 'clips') else 'unknown'} clips")
+        
+        # Ensure result has correct duration and size
+        result = result.with_duration(clip_duration)
+        if hasattr(clip, 'size') and clip.size:
+            # Verify size is preserved
+            if hasattr(result, 'size') and result.size != clip.size:
+                logger.warning(f"Karaoke composite size mismatch: original={clip.size}, composite={result.size}")
+        
+        # Log text details
+        logger.debug(f"Created karaoke overlay: text='{text_upper[:50]}{'...' if len(text_upper) > 50 else ''}' (uppercase), position=center/{y_position:.0f}px, duration={clip_duration}, composite_size={result.size if hasattr(result, 'size') else 'N/A'}, text_constraints=({max_width}x{max_height})")
+        return result
+    except Exception as e:
+        logger.error(f"Failed to create karaoke overlay: {e}", exc_info=True)
+        logger.warning("Returning original clip without karaoke overlay due to error")
+        # CRITICAL: Always return the original clip if overlay fails
+        # This ensures dancing GIFs are still visible even if text overlay fails
+        return clip
+
+
 def load_blacklist(blacklist_path: Path) -> Set[str]:
     """
     Load blacklisted video filenames from a JSON file.
@@ -104,7 +389,7 @@ def save_blacklist(blacklist_path: Path, blacklist: Set[str]) -> None:
         with open(blacklist_path, 'w') as f:
             json.dump(list(blacklist), f, indent=2)
     except Exception as e:
-        print(f"[warn] Failed to save blacklist: {e}", flush=True)
+        logger.warning(f"Failed to save blacklist: {e}")
 
 
 def load_checkpoint(checkpoint_dir: Path) -> Tuple[int, List[Path], Set[str]]:
@@ -134,7 +419,7 @@ def load_checkpoint(checkpoint_dir: Path) -> Tuple[int, List[Path], Set[str]]:
             existing_clips = [Path(c) for c in saved_clips if Path(c).exists()]
             return last_sec, existing_clips, load_blacklist(blacklist_file)
     except Exception as e:
-        print(f"[warn] Failed to load checkpoint: {e}, starting fresh", flush=True)
+        logger.warning(f"Failed to load checkpoint: {e}, starting fresh")
         return 0, [], load_blacklist(blacklist_file)
 
 
@@ -160,7 +445,7 @@ def save_checkpoint(checkpoint_dir: Path, last_completed_sec: int, saved_clips: 
             }, f, indent=2)
         save_blacklist(checkpoint_dir / "blacklist.json", blacklist)
     except Exception as e:
-        print(f"[warn] Failed to save checkpoint: {e}", flush=True)
+        logger.warning(f"Failed to save checkpoint: {e}")
 
 
 def build_visual_track(
@@ -172,6 +457,8 @@ def build_visual_track(
     speed_min: float = 0.5,
     speed_max: float = 2.0,
     checkpoint_dir: Path | None = None,
+    lyrics_mapping: Dict[int, str] | None = None,
+    karaoke_mapping: Dict[int, str] | None = None,
 ) -> List[Path]:
     """
     Build visual track by generating 1-second clips and writing them to disk.
@@ -195,6 +482,8 @@ def build_visual_track(
         speed_min: Minimum speed multiplier (default 0.5x)
         speed_max: Maximum speed multiplier (default 2.0x)
         checkpoint_dir: Directory for checkpoints (default: checkpoints/)
+        lyrics_mapping: Optional dict mapping second index -> phrase-ending word (for phrase-ending overlay mode)
+        karaoke_mapping: Optional dict mapping second index -> text line (for karaoke mode, takes precedence over lyrics_mapping)
         
     Returns:
         List of Path objects pointing to generated 1-second clip files in order
@@ -208,7 +497,7 @@ def build_visual_track(
 
     # Load blacklist and checkpoint
     if checkpoint_dir is None:
-        checkpoint_dir = Path("checkpoints")
+        checkpoint_dir = Path(CHECKPOINTS_DIR)
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -224,11 +513,11 @@ def build_visual_track(
         raise FileNotFoundError(f"No usable MP4 files found in: {video_folder} (all blacklisted?)")
 
     if start_sec > 0:
-        print(f"[resume] Resuming from second {start_sec}, {len(saved_clip_paths)} clips already saved", flush=True)
+        logger.info(f"Resuming from second {start_sec}, {len(saved_clip_paths)} clips already saved")
 
     clip_paths: List[Path] = saved_clip_paths.copy()
     skipped_count = 0
-    checkpoint_interval = 50  # Save checkpoint every 50 seconds
+    checkpoint_interval = CHECKPOINT_INTERVAL
 
     for sec in tqdm(
         range(start_sec, duration_seconds),
@@ -268,12 +557,12 @@ def build_visual_track(
                         pass
                     video_clip = None
                 if video_path.name not in blacklist:
-                    print(f"[blacklist] Adding {video_path.name} to blacklist (error: {type(e).__name__})", flush=True)
+                    logger.debug(f"Adding {video_path.name} to blacklist (error: {type(e).__name__})")
                     blacklist.add(video_path.name)
                     save_blacklist(checkpoint_dir / "blacklist.json", blacklist)
                 video_path = None
                 if attempt == max_tries - 1:
-                    print(f"[warn] Failed to load video after {max_tries} tries at clip {sec}, using fallback", flush=True)
+                    logger.warning(f"Failed to load video after {max_tries} tries at clip {sec}, using fallback")
                     skipped_count += 1
 
         # Process the clip with error handling
@@ -284,15 +573,60 @@ def build_visual_track(
         try:
             if video_clip is None:
                 # Create a black frame as fallback
-                one_sec = ColorClip(size=target_resolution, color=(0, 0, 0)).with_duration(1.0)
+                one_sec = ColorClip(size=target_resolution, color=(0, 0, 0)).with_duration(CLIP_DURATION_SECONDS)
             else:
-                base_window = 1.2
+                base_window = BASE_WINDOW_SECONDS
                 max_start = max(0.0, (video_clip.duration or 0.0) - base_window)
                 start_t = random.uniform(0.0, max_start) if max_start > 0 else 0.0
                 sub = _subclip(video_clip, start_t, min(start_t + base_window, video_clip.duration))
                 sped = _speedx(sub, factor=speed)
                 boxed = _resize_letterbox(sped, target_resolution)
-                one_sec = _set_duration(boxed, 1.0)
+                one_sec = _set_duration(boxed, CLIP_DURATION_SECONDS)
+            
+            # Add text overlay if this second has lyrics
+            # Karaoke mode takes precedence over phrase-ending mode
+            if karaoke_mapping is not None and sec in karaoke_mapping:
+                # Karaoke mode: display all words for this second
+                text_line = karaoke_mapping[sec]
+                try:
+                    logger.debug(f"Adding karaoke overlay to clip {sec}: '{text_line[:50]}{'...' if len(text_line) > 50 else ''}'")
+                    one_sec = _add_karaoke_overlay(one_sec, text_line, target_resolution)
+                    logger.debug(f"Successfully added karaoke overlay to clip {sec}")
+                except Exception as e:
+                    logger.error(f"Failed to add karaoke overlay at second {sec}: {e}", exc_info=True)
+                    # Continue without overlay - one_sec is still the original clip
+            elif lyrics_mapping is not None and sec in lyrics_mapping:
+                # Phrase-ending mode: display single word
+                word_text = lyrics_mapping[sec]
+                try:
+                    # Store original clip info for verification
+                    original_clip_type = type(one_sec).__name__
+                    original_clip_size = getattr(one_sec, 'size', None)
+                    original_clip_duration = getattr(one_sec, 'duration', None)
+                    
+                    logger.info(f"Adding lyric overlay '{word_text}' to clip {sec} (original: {original_clip_type}, size={original_clip_size}, duration={original_clip_duration})")
+                    one_sec = _add_text_overlay(one_sec, word_text, target_resolution)
+                    
+                    # Verify overlay was applied correctly
+                    overlay_clip_type = type(one_sec).__name__
+                    overlay_clip_size = getattr(one_sec, 'size', None)
+                    overlay_clip_duration = getattr(one_sec, 'duration', None)
+                    
+                    if overlay_clip_type == 'CompositeVideoClip':
+                        logger.info(f"Successfully added lyric overlay '{word_text}' to clip {sec} (composite: {overlay_clip_type}, size={overlay_clip_size}, duration={overlay_clip_duration})")
+                    else:
+                        logger.warning(f"Overlay result is not CompositeVideoClip: {overlay_clip_type} - original clip may be lost")
+                except Exception as e:
+                    logger.error(f"Failed to add lyric overlay at second {sec}: {e}", exc_info=True)
+                    logger.warning(f"Continuing without overlay - original clip preserved")
+                    # Continue without overlay - one_sec is still the original clip
+            elif sec == 0:
+                # Log once at the start to confirm which mode is active
+                if karaoke_mapping is not None:
+                    logger.info(f"Karaoke mapping available with {len(karaoke_mapping)} entries: {sorted(karaoke_mapping.keys())[:10]}{'...' if len(karaoke_mapping) > 10 else ''}")
+                elif lyrics_mapping is not None:
+                    logger.info(f"Lyrics mapping available with {len(lyrics_mapping)} entries: {list(lyrics_mapping.keys())}")
+                    logger.debug(f"Will check each second for lyric overlays")
 
             checkpoint_clip_path.parent.mkdir(parents=True, exist_ok=True)
             try:
@@ -300,7 +634,7 @@ def build_visual_track(
                     str(checkpoint_clip_path),
                     codec="libx264",
                     audio=False,
-                    fps=30,
+                    fps=DEFAULT_FPS,
                     preset="ultrafast",
                 )
             except TypeError:
@@ -308,7 +642,7 @@ def build_visual_track(
                     str(checkpoint_clip_path),
                     codec="libx264",
                     audio=False,
-                    fps=30,
+                    fps=DEFAULT_FPS,
                 )
 
             one_sec.close()
@@ -317,26 +651,25 @@ def build_visual_track(
             clip_paths.append(checkpoint_clip_path)
 
         except Exception as e:
-            import traceback
             error_msg = str(e)
-            print(f"[warn] Error processing {video_path.name if video_path else 'fallback'} at clip {sec}: {type(e).__name__}: {error_msg}", flush=True)
+            logger.warning(f"Error processing {video_path.name if video_path else 'fallback'} at clip {sec}: {type(e).__name__}: {error_msg}")
             if sec < 5:
-                traceback.print_exc()
+                logger.debug("Traceback:", exc_info=True)
             skipped_count += 1
             # Fallback black frame
             try:
-                fallback = ColorClip(size=target_resolution, color=(0, 0, 0)).with_duration(1.0)
+                fallback = ColorClip(size=target_resolution, color=(0, 0, 0)).with_duration(CLIP_DURATION_SECONDS)
                 fallback.write_videofile(
                     str(checkpoint_clip_path),
                     codec="libx264",
                     audio=False,
-                    fps=30,
+                    fps=DEFAULT_FPS,
                     preset="ultrafast",
                 )
                 fallback.close()
                 clip_paths.append(checkpoint_clip_path)
             except Exception as fallback_err:
-                print(f"[error] Failed to create fallback clip: {fallback_err}", flush=True)
+                logger.error(f"Failed to create fallback clip: {fallback_err}")
                 clip_paths.append(checkpoint_clip_path)
         finally:
             # Always close source clips to free resources immediately
@@ -350,13 +683,13 @@ def build_visual_track(
         # Save checkpoint periodically
         if (sec + 1) % checkpoint_interval == 0 or sec == duration_seconds - 1:
             save_checkpoint(checkpoint_dir, sec + 1, clip_paths, blacklist)
-            print(f"[checkpoint] Saved progress at second {sec + 1}/{duration_seconds}", flush=True)
+            logger.info(f"Saved progress at second {sec + 1}/{duration_seconds}")
 
     if skipped_count > 0:
-        print(f"[info] Skipped {skipped_count} problematic clips (used black frames)", flush=True)
+        logger.info(f"Skipped {skipped_count} problematic clips (used black frames)")
 
-    print(f"[info] Final blacklist: {len(blacklist)} files", flush=True)
-    print(f"[info] Generated {len(clip_paths)} clip files", flush=True)
+    logger.info(f"Final blacklist: {len(blacklist)} files")
+    logger.info(f"Generated {len(clip_paths)} clip files")
 
     return clip_paths
 
