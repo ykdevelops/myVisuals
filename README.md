@@ -1,6 +1,6 @@
 # AudioGiphy
 
-AudioGiphy is a Python tool that creates vertical videos from audio tracks by syncing 1-second visual clips to the track's BPM (beats per minute). It includes advanced lyric detection and overlay features, supporting both phrase-ending word highlights and full karaoke mode. This MVP demonstrates a fully local, memory-efficient video rendering pipeline that analyzes audio, detects lyrics, selects clips from a local bank, and produces a final MP4 synchronized to the music.
+AudioGiphy is a Python tool that creates vertical videos from audio tracks by syncing 1-second visual clips to the track's BPM (beats per minute). It includes advanced lyric detection, GIPHY integration for keyword-driven GIFs, and supports both phrase-ending word highlights and full karaoke mode. This MVP demonstrates a fully local, memory-efficient video rendering pipeline that analyzes audio, detects lyrics, selects clips from a local bank or GIPHY API, and produces a final MP4 synchronized to the music.
 
 ## Overview
 
@@ -8,10 +8,10 @@ AudioGiphy takes a local audio file and a folder of MP4 clips, then:
 
 - **Analyzes BPM** over time using librosa
 - **Detects lyrics** using OpenAI Whisper (optional) with word-level timestamps
-- **Selects clips** randomly from a local bank folder
+- **Selects clips** randomly from a local bank folder or GIPHY API based on keyword queries
 - **Builds 1-second segments** synced to the BPM timeline
-- **Overlays lyrics** (optional) in phrase-ending mode or full karaoke mode
 - **Renders a vertical MP4** (1080x1920 by default) with the original audio attached
+- **GIPHY Integration**: Uses keyword-driven GIFs from GIPHY API as full-screen base clips
 
 The tool is designed to be memory-efficient, handling long videos (48+ minutes) without running out of memory by writing clips to disk immediately and using ffmpeg for efficient concatenation.
 
@@ -20,6 +20,7 @@ The tool is designed to be memory-efficient, handling long videos (48+ minutes) 
 - **Python**: 3.11 or higher
 - **ffmpeg**: Must be installed and available in PATH
 - **Python packages**: See `requirements.txt`
+- **GIPHY API Key** (optional): Set `GIPHY_API_KEY` environment variable for GIPHY integration
 
 ### Installing ffmpeg
 
@@ -84,23 +85,47 @@ python -m audiogiphy.cli render \
   --lyrics-json lyrics.json
 ```
 
-### Render with Karaoke Mode (All Words)
+### Render with GIPHY Keyword-Driven GIFs
 
 ```bash
-# Detect lyrics (same as above)
-python -m audiogiphy.cli detect-lyrics \
-  --audio "song.mp3" \
-  --lyrics-output lyrics.json
-
-# Render with karaoke mode
+# Create a segments JSON file with keyword queries (see format below)
+# Then render with GIPHY integration
 python -m audiogiphy.cli render \
   --audio "song.mp3" \
   --gif-folder bank \
   --duration-seconds 60 \
-  --output karaoke_output.mp4 \
-  --lyrics-json lyrics.json \
-  --karaoke-mode
+  --output giphy_output.mp4 \
+  --lyrics-giphy-plan segments.json
+
+# Set GIPHY API key as environment variable
+export GIPHY_API_KEY=your_api_key_here
 ```
+
+**Segments JSON format:**
+```json
+{
+  "segments": [
+    {
+      "id": 1,
+      "start": 0.0,
+      "end": 5.0,
+      "gif_query": "sunrise party"
+    },
+    {
+      "id": 2,
+      "start": 5.0,
+      "end": 10.0,
+      "gif_query": "car windows rolling down"
+    }
+  ]
+}
+```
+
+When `--lyrics-giphy-plan` is provided:
+- GIPHY GIFs are fetched for each segment's `gif_query`
+- GIFs are used as full-screen base clips during their segment time ranges
+- Falls back to bank clips when no GIPHY segment is active
+- All clips are the same size (no overlays)
 
 ### Example Folder Layout
 
@@ -129,8 +154,9 @@ Creates a BPM-synced video with optional lyric overlays.
 - `--width`: Video width in pixels (default: 1080)
 - `--height`: Video height in pixels (default: 1920)
 - `--seed`: Random seed for reproducible results
-- `--lyrics-json`: Path to lyrics JSON file from `detect-lyrics`. If provided, overlays phrase-ending words on video.
-- `--karaoke-mode`: Display all words per second (karaoke mode). Requires `--lyrics-json`.
+- `--lyrics-json`: Path to lyrics JSON file from `detect-lyrics`. If provided, overlays phrase-ending words on video. (Note: Currently disabled - GIPHY mode uses GIFs as base clips)
+- `--karaoke-mode`: Display all words per second (karaoke mode). Requires `--lyrics-json`. (Note: Currently disabled - GIPHY mode uses GIFs as base clips)
+- `--lyrics-giphy-plan`: Path to JSON file with lyric segments and GIPHY queries. If provided, fetches GIPHY GIFs for overlays as full-screen base clips.
 
 **Examples:**
 ```bash
@@ -191,22 +217,23 @@ Optional lyric detection using OpenAI Whisper:
 - **Music-optimized**: Tuned parameters for better music transcription
 - **Output formats**: JSON (with timestamps) or plain text
 
-### 3. Lyric Overlay Modes
+### 3. GIPHY Integration
 
-Two lyric overlay modes are available:
+AudioGiphy supports keyword-driven GIF selection from GIPHY API:
 
-#### Phrase-Ending Mode (Default)
-- Detects lyric phrases using punctuation and time gaps
-- Extracts the last meaningful word from each phrase
-- Displays large, bold, white text (120px) centered on screen
-- Words appear at phrase endings for one second
+- **Segment-Based Planning**: Define time segments with keyword queries in a JSON file
+- **Automatic Fetching**: GIPHY GIFs are fetched and cached automatically
+- **Full-Screen Base Clips**: GIPHY GIFs are used as full-screen base clips (same size as bank clips)
+- **Smart Fallback**: Falls back to bank clips when no GIPHY segment is active
+- **API Key Security**: API key is read from `GIPHY_API_KEY` environment variable (never hardcoded)
+- **Efficient Caching**: Results are cached in-memory and on-disk to minimize API calls
 
-#### Karaoke Mode (`--karaoke-mode`)
-- Displays all words spoken in each second
-- Words are joined into lines and auto-wrapped
-- Smaller font size (80px) for readability
-- Text positioned in upper quarter of screen
-- Perfect for synchronized karaoke-style display
+**Setup:**
+```bash
+export GIPHY_API_KEY=your_api_key_here
+```
+
+**Note**: Lyric overlay modes (phrase-ending and karaoke) are currently disabled when using GIPHY mode, as GIFs are used as base clips rather than overlays.
 
 ### 4. 1 Second Visual Clips from Local Bank
 
@@ -234,10 +261,11 @@ audiogiphy/
 ├── visual_builder.py     # Video clip processing and building
 ├── lyrics_analysis.py    # Whisper-based lyric detection
 ├── lyrics_overlays.py    # Lyric parsing and overlay mapping
+├── lyrics_giphy_planner.py  # GIPHY segment planning and GIF fetching
+├── giphy_client.py       # GIPHY API client with caching
 ├── render_pipeline.py    # Main rendering orchestration
 ├── config.py             # Centralized configuration constants
 ├── cli.py                # Command-line interface
-├── giphy_placeholder.py  # Placeholder for future GIPHY API integration
 ├── api.py                # Flask API endpoints
 └── api_server.py         # API server entry point
 ```
@@ -334,10 +362,10 @@ The built files will be in `frontend/dist/` and will be served automatically by 
 
 ## Future Work
 
-- **Real GIPHY API Integration**: Replace local video folder with real-time GIPHY search using `GiphyClient` in `giphy_placeholder.py`
 - **Mood and Genre Aware Clip Selection**: Analyze audio mood/genre and select clips that match
-- **Advanced Lyric Styling**: Customizable fonts, colors, animations
+- **Advanced Lyric Styling**: Customizable fonts, colors, animations (re-enable lyric overlays)
 - **Multi-language Support**: Enhanced language detection and transcription
+- **GIPHY Overlay Mode**: Option to overlay small GIPHY GIFs on top of bank clips instead of replacing them
 
 ## License
 
