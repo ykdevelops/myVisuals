@@ -29,9 +29,15 @@ from audiogiphy.config import (
     LYRICS_STROKE_WIDTH,
     LYRICS_VERTICAL_POSITION,
     LYRICS_MAX_HEIGHT_RATIO,
+    WATERMARK_TEXT,
+    WATERMARK_FONT_SIZE,
+    WATERMARK_TEXT_COLOR,
+    WATERMARK_OPACITY,
+    WATERMARK_MARGIN_RIGHT,
+    WATERMARK_MARGIN_BOTTOM,
 )
 
-__all__ = ["build_visual_track"]
+__all__ = ["build_visual_track", "_add_watermark"]
 
 logger = logging.getLogger("audiogiphy.visual_builder")
 
@@ -358,6 +364,125 @@ def _add_karaoke_overlay(
         logger.warning("Returning original clip without karaoke overlay due to error")
         # CRITICAL: Always return the original clip if overlay fails
         # This ensures dancing GIFs are still visible even if text overlay fails
+        return clip
+
+
+def _add_watermark(
+    clip: VideoFileClip,
+    resolution: Tuple[int, int],
+) -> VideoFileClip:
+    """
+    Add a watermark overlay to a video clip.
+    
+    The watermark appears in the bottom-right corner with configurable opacity,
+    margins, and styling. It's designed to be subtle but readable.
+    
+    Args:
+        clip: Video clip to overlay watermark on
+        resolution: Target resolution (width, height)
+        
+    Returns:
+        CompositeVideoClip with watermark overlay on top
+    """
+    try:
+        from moviepy import TextClip  # type: ignore
+        
+        # Get clip duration
+        clip_duration = getattr(clip, 'duration', None) or CLIP_DURATION_SECONDS
+        
+        # Create text clip for watermark
+        # Try common fonts, fallback to default
+        watermark_fonts = ["Arial", "Helvetica", "DejaVu-Sans"]
+        txt_clip = None
+        
+        for font_name in watermark_fonts + [None]:
+            try:
+                if font_name:
+                    txt_clip = TextClip(
+                        text=WATERMARK_TEXT,
+                        font_size=WATERMARK_FONT_SIZE,
+                        color=WATERMARK_TEXT_COLOR,
+                        font=font_name,
+                    ).with_duration(clip_duration)
+                    logger.debug(f"Successfully created watermark text clip with font: {font_name}")
+                    break
+                else:
+                    # Fallback: default font
+                    txt_clip = TextClip(
+                        text=WATERMARK_TEXT,
+                        font_size=WATERMARK_FONT_SIZE,
+                        color=WATERMARK_TEXT_COLOR,
+                    ).with_duration(clip_duration)
+                    logger.debug("Created watermark text clip with default font")
+                    break
+            except Exception as e:
+                if font_name:
+                    logger.debug(f"Font {font_name} failed for watermark: {e}, trying next")
+                else:
+                    logger.warning(f"All watermark font attempts failed: {e}")
+                    raise
+        
+        if txt_clip is None:
+            raise RuntimeError("Failed to create watermark text clip with any method")
+        
+        # Position watermark in bottom-right corner with margins
+        # Use relative positioning: position relative to bottom-right, then offset by margins
+        width, height = resolution
+        
+        # Try to get text clip size for accurate positioning
+        txt_w = 0
+        txt_h = 0
+        try:
+            if hasattr(txt_clip, 'size') and txt_clip.size:
+                txt_w, txt_h = txt_clip.size
+            else:
+                # Estimate text width based on font size and character count
+                # Rough estimate: each character is about 0.6 * font_size wide
+                txt_w = int(len(WATERMARK_TEXT) * WATERMARK_FONT_SIZE * 0.6)
+                txt_h = WATERMARK_FONT_SIZE
+                logger.debug(f"Text clip size not available, using estimate: {txt_w}x{txt_h}")
+        except Exception as e:
+            logger.debug(f"Could not determine text clip size: {e}, using estimate")
+            txt_w = int(len(WATERMARK_TEXT) * WATERMARK_FONT_SIZE * 0.6)
+            txt_h = WATERMARK_FONT_SIZE
+        
+        # Calculate position: bottom-right corner minus margins minus text size
+        x_position = width - txt_w - WATERMARK_MARGIN_RIGHT
+        y_position = height - txt_h - WATERMARK_MARGIN_BOTTOM
+        
+        # Ensure position is not negative
+        x_position = max(0, x_position)
+        y_position = max(0, y_position)
+        
+        txt_clip = txt_clip.with_position((x_position, y_position))
+        
+        # Apply opacity (80% visible = 0.8 opacity)
+        # Note: Opacity is applied after positioning to ensure it works correctly
+        if hasattr(txt_clip, "set_opacity"):
+            txt_clip = txt_clip.set_opacity(WATERMARK_OPACITY)  # type: ignore[attr-defined]
+        elif hasattr(txt_clip, "with_opacity"):
+            txt_clip = txt_clip.with_opacity(WATERMARK_OPACITY)  # type: ignore[attr-defined]
+        else:
+            # Fallback: watermark will be fully opaque
+            logger.debug("Opacity method not available, watermark will be fully opaque")
+        
+        # Get base clip size to ensure composite maintains original resolution
+        base_size = getattr(clip, 'size', None) or resolution
+        
+        # Composite watermark over video (watermark on top - outmost layer)
+        # IMPORTANT: Explicitly set size to base clip size so composite doesn't shrink
+        result = CompositeVideoClip([clip, txt_clip], size=base_size)
+        
+        # Ensure result has correct duration and size
+        result = result.with_duration(clip_duration)
+        
+        logger.debug(f"Created watermark overlay: text='{WATERMARK_TEXT}', position=({x_position}, {y_position}), opacity={WATERMARK_OPACITY}, composite_size={result.size if hasattr(result, 'size') else 'N/A'}")
+        return result
+    except Exception as e:
+        logger.error(f"Failed to create watermark overlay: {e}", exc_info=True)
+        logger.warning("Returning original clip without watermark overlay due to error")
+        # CRITICAL: Always return the original clip if watermark fails
+        # This ensures video is still rendered even if watermark fails
         return clip
 
 

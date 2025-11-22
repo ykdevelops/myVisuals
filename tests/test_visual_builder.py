@@ -5,7 +5,7 @@ Verifies that functions can be called without crashing.
 import pytest
 from pathlib import Path
 
-from audiogiphy.visual_builder import build_visual_track
+from audiogiphy.visual_builder import build_visual_track, _add_watermark
 
 
 def test_build_visual_track_missing_folder():
@@ -66,4 +66,26 @@ def test_build_visual_track_with_bank():
         assert all(isinstance(p, Path) for p in clip_paths)
         # Verify clips were created
         assert all(p.exists() for p in clip_paths)
+
+
+def test_add_watermark():
+    """Test that watermark helper can be called without crashing."""
+    from moviepy import VideoFileClip, ColorClip  # type: ignore
+    
+    # Create a simple test clip (1 second, 1080x1920, black)
+    test_clip = ColorClip(size=(1080, 1920), color=(0, 0, 0), duration=1.0)
+    
+    # Add watermark
+    result = _add_watermark(test_clip, resolution=(1080, 1920))
+    
+    # Verify result is a VideoFileClip-like object with correct duration
+    assert hasattr(result, 'duration') or hasattr(result, 'with_duration')
+    # Verify size is preserved
+    if hasattr(result, 'size') and result.size:
+        assert result.size == (1080, 1920)
+    
+    # Cleanup
+    test_clip.close()
+    if hasattr(result, 'close'):
+        result.close()
 

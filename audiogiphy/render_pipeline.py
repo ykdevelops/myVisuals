@@ -18,7 +18,7 @@ from typing import Tuple
 from moviepy import VideoFileClip, AudioFileClip  # type: ignore
 
 from audiogiphy.audio_analysis import analyze_bpm_per_second, analyze_global_bpm
-from audiogiphy.visual_builder import build_visual_track, _subclip, _set_duration, _set_audio
+from audiogiphy.visual_builder import build_visual_track, _subclip, _set_duration, _set_audio, _add_watermark
 from audiogiphy.config import DEFAULT_FPS, DEFAULT_RESOLUTION, CHECKPOINTS_DIR
 from audiogiphy.lyrics_overlays import extract_lyric_anchors, map_anchors_to_seconds, build_karaoke_mapping
 
@@ -190,6 +190,10 @@ def render_video(
     logger.info("Writing final output")
     # Load the concatenated video once (only one VideoFileClip in memory)
     visual = VideoFileClip(str(visuals_raw_path), audio=False)
+
+    # Add watermark to the final video (applied once to entire video)
+    logger.info("Adding watermark overlay")
+    visual = _add_watermark(visual, resolution)
 
     # Attach audio and write final output
     final = _set_duration(_set_audio(visual, audio), duration_seconds)

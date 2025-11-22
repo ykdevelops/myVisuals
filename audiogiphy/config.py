@@ -42,3 +42,11 @@ LYRICS_STROKE_WIDTH = 8  # Outline width (thicker for white-on-white visibility 
 LYRICS_VERTICAL_POSITION = 0.25  # Vertical position (0.0 = top, 1.0 = bottom, 0.25 = upper quarter)
 LYRICS_MAX_HEIGHT_RATIO = 0.3  # Maximum height for text as ratio of frame height (30% prevents cropping)
 
+# Watermark defaults
+WATERMARK_TEXT = "Powered by GIPHY"  # Watermark text content
+WATERMARK_FONT_SIZE = 40  # Font size for watermark (smaller than lyrics, readable but subtle)
+WATERMARK_TEXT_COLOR = "white"  # Watermark text color
+WATERMARK_OPACITY = 0.8  # Watermark opacity (0.0 = transparent, 1.0 = opaque, 0.8 = 80% visible)
+WATERMARK_MARGIN_RIGHT = 20  # Margin from right edge in pixels
+WATERMARK_MARGIN_BOTTOM = 20  # Margin from bottom edge in pixels
+
