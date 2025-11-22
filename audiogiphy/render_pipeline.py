@@ -21,6 +21,8 @@ from audiogiphy.audio_analysis import analyze_bpm_per_second, analyze_global_bpm
 from audiogiphy.visual_builder import build_visual_track, _subclip, _set_duration, _set_audio, _add_watermark
 from audiogiphy.config import DEFAULT_FPS, DEFAULT_RESOLUTION, CHECKPOINTS_DIR
 from audiogiphy.lyrics_overlays import extract_lyric_anchors, map_anchors_to_seconds, build_karaoke_mapping
+from audiogiphy.giphy_client import GiphyClient
+from audiogiphy.lyrics_giphy_planner import plan_giphy_segments
 
 __all__ = ["render_video"]
 
@@ -36,6 +38,7 @@ def render_video(
     seed: int | None = None,
     lyrics_json_path: str | None = None,
     karaoke_mode: bool = False,
+    lyrics_giphy_plan_path: str | None = None,
 ) -> None:
     """
     Render a complete video from audio and video clips.
@@ -62,6 +65,7 @@ def render_video(
         seed: Random seed for reproducible results (optional)
         lyrics_json_path: Optional path to lyrics JSON file from detect-lyrics
         karaoke_mode: If True, display all words per second (karaoke mode). If False, display phrase-ending words (default: False)
+        lyrics_giphy_plan_path: Optional path to LLM JSON with segments and gif_query. Enables GIPHY overlay planning.
         
     Raises:
         FileNotFoundError: If audio file doesn't exist
@@ -129,6 +133,32 @@ def render_video(
                 logger.warning(f"Failed to load lyrics: {e}, continuing without lyric overlays", exc_info=True)
                 lyrics_mapping = None
     
+    # Process GIPHY segments if provided
+    giphy_segment_plan = None
+    if lyrics_giphy_plan_path:
+        logger.info("Processing GIPHY segment plan")
+        logger.info(f"GIPHY plan JSON path: {lyrics_giphy_plan_path}")
+        try:
+            # Initialize GIPHY client (reads API key from environment)
+            giphy_client = GiphyClient()
+            
+            if giphy_client.placeholder_mode:
+                logger.warning("GIPHY_API_KEY not set, skipping GIPHY overlay planning")
+                giphy_segment_plan = None
+            else:
+                # Plan GIPHY segments (deduplicates queries, calls API, builds mapping)
+                giphy_segment_plan = plan_giphy_segments(lyrics_giphy_plan_path, giphy_client)
+                logger.info(f"Built GIPHY plan for {len(giphy_segment_plan)} segments")
+                if giphy_segment_plan:
+                    sample_segments = list(giphy_segment_plan.items())[:3]
+                    logger.debug(f"Sample GIPHY segments: {[(sid, plan['gif_query'], len(plan['gif_urls'])) for sid, plan in sample_segments]}")
+        except FileNotFoundError as e:
+            logger.warning(f"GIPHY plan file not found: {e}, continuing without GIPHY overlays")
+            giphy_segment_plan = None
+        except Exception as e:
+            logger.warning(f"Failed to load GIPHY plan: {e}, continuing without GIPHY overlays", exc_info=True)
+            giphy_segment_plan = None
+    
     # Step 2: Build visual track (generates 1-second clips on disk)
     logger.info("Generating 1s clips")
     checkpoint_dir = Path(output_path).parent / CHECKPOINTS_DIR / Path(output_path).stem
@@ -141,6 +171,7 @@ def render_video(
         checkpoint_dir=checkpoint_dir,
         lyrics_mapping=lyrics_mapping,
         karaoke_mapping=karaoke_mapping,
+        giphy_segment_plan=giphy_segment_plan,
     )
 
     if len(clip_paths) != duration_seconds:

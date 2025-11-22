@@ -22,6 +22,7 @@ __all__ = [
     "extract_lyric_anchors",
     "map_anchors_to_seconds",
     "build_karaoke_mapping",
+    "plan_giphy_segments",
 ]
 
 from audiogiphy.render_pipeline import render_video
@@ -32,9 +33,11 @@ from audiogiphy.audio_analysis import (
     analyze_global_bpm,
 )
 from audiogiphy.visual_builder import build_visual_track
-from audiogiphy.giphy_placeholder import GiphyClient
+# GiphyClient from giphy_client.py (new implementation with API support)
+from audiogiphy.giphy_client import GiphyClient
 from audiogiphy.lyrics_analysis import detect_lyrics, LyricsResult, LyricWord
 from audiogiphy.lyrics_overlays import extract_lyric_anchors, map_anchors_to_seconds, build_karaoke_mapping
+from audiogiphy.lyrics_giphy_planner import plan_giphy_segments
 
 # Lazy import for API (only if flask is installed)
 try:

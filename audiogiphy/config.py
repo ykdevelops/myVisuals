@@ -26,7 +26,7 @@ BASE_WINDOW_SECONDS = 1.2  # For extracting subclips from source videos
 CHECKPOINT_INTERVAL = 50  # Save checkpoint every N seconds
 
 # Lyrics analysis defaults
-WHISPER_MODEL_SIZE = "medium"  # Options: tiny, base, small, medium, large (medium = best balance of accuracy/speed)
+WHISPER_MODEL_SIZE = "large"  # Options: tiny, base, small, medium, large (large = highest accuracy, slower)
 WHISPER_DEFAULT_LANGUAGE = "en"  # English
 WHISPER_TEMPERATURE = 0.0  # More deterministic, less random (0.0 = most deterministic)
 WHISPER_COMPRESSION_RATIO_THRESHOLD = 2.4  # Filter out hallucinations (lower = stricter)
@@ -49,4 +49,9 @@ WATERMARK_TEXT_COLOR = "white"  # Watermark text color
 WATERMARK_OPACITY = 0.8  # Watermark opacity (0.0 = transparent, 1.0 = opaque, 0.8 = 80% visible)
 WATERMARK_MARGIN_RIGHT = 20  # Margin from right edge in pixels
 WATERMARK_MARGIN_BOTTOM = 20  # Margin from bottom edge in pixels
+
+# GIPHY overlay defaults
+GIPHY_OVERLAY_SIZE_RATIO = 0.3  # Size of GIPHY overlay as ratio of frame width (30% of width)
+GIPHY_OVERLAY_POSITION = "bottom-right"  # Position: "bottom-right", "bottom-left", "top-right", "top-left", "center"
+GIPHY_OVERLAY_MARGIN = 20  # Margin from edges in pixels
 

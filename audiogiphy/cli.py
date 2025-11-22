@@ -138,6 +138,12 @@ Examples:
         action="store_true",
         help="Display all words per second (karaoke mode). Requires --lyrics-json."
     )
+    render_parser.add_argument(
+        "--lyrics-giphy-plan",
+        type=str,
+        default=None,
+        help="Path to LLM JSON with segments and gif_query. Enables GIPHY overlay planning."
+    )
     
     # Detect lyrics subcommand
     lyrics_parser = subparsers.add_parser(
@@ -328,6 +334,12 @@ def handle_render_command(args) -> None:
     if args.karaoke_mode and not args.lyrics_json:
         raise ValueError("--karaoke-mode requires --lyrics-json to be provided")
     
+    # Validate GIPHY plan file exists if provided
+    if args.lyrics_giphy_plan:
+        from pathlib import Path
+        if not Path(args.lyrics_giphy_plan).exists():
+            raise FileNotFoundError(f"GIPHY plan file not found: {args.lyrics_giphy_plan}")
+    
     render_video(
         audio_path=args.audio,
         video_folder=args.gif_folder,
@@ -337,6 +349,7 @@ def handle_render_command(args) -> None:
         seed=args.seed,
         lyrics_json_path=args.lyrics_json,
         karaoke_mode=args.karaoke_mode,
+        lyrics_giphy_plan_path=args.lyrics_giphy_plan,
     )
     
     logger.info("Render completed successfully!")
